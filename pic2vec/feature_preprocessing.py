@@ -63,6 +63,7 @@ preprocessing_dict = {
     },
 }
 
+
 def _create_csv_with_image_paths(list_of_image_paths, new_csv_name, image_column_header):
     """
     Take in a list of image names, and create a new csv file where each
@@ -256,6 +257,27 @@ def _image_paths_finder(image_path, csv_path, image_column_header, new_csv_name)
             a  list of the paths to all the images being featurized
 
     """
+    # -------------- #
+    # ERROR CHECKING #
+    # -------------- #
+
+    # If there is no image directory or csv, then something is wrong.
+    if image_path == '' and csv_path == '':
+        raise ValueError('Need to load either an image directory or a CSV with'
+                         ' URLs, if no image directory included.')
+
+    # Raise an error if the image_path doesn't point to a directory
+    if image_path and not os.path.isdir(image_path):
+        raise TypeError('image_path must lead to a directory if '
+                        'it is initialized. It is where the images are stored.')
+
+    # Raise an error if the csv_path doesn't point to a file
+    if csv_path and not os.path.isfile(csv_path):
+        raise TypeError('csv_path must lead to a file if it is initialized.'
+                        ' This is the csv containing pointers to the images.')
+
+    # ------------------------------------------------------ #
+
     # CASE 1: They only give an image directory with no CSV
     if csv_path == '':
 
@@ -355,9 +377,9 @@ def _convert_single_image(image_source, model_str, image_path, target_size=(299,
          batch_size=t.Int)
 def preprocess_data(image_column_header,
                     model_str,
-                    image_path='',
-                    csv_path='',
-                    new_csv_name='featurizer_csv/generated_images_csv',
+                    dataframe,
+                    image_source,
+                    image_path,
                     target_size=(299, 299),
                     grayscale=False,
                     batch_size=1000):
@@ -401,43 +423,12 @@ def preprocess_data(image_column_header,
             features to the correct row of the csv.
 
     """
-    # -------------- #
-    # ERROR CHECKING #
-    # -------------- #
-
-    # If there is no image directory or csv, then something is wrong.
-    if image_path == '' and csv_path == '':
-        raise ValueError('Need to load either an image directory or a CSV with'
-                         ' URLs, if no image directory included.')
-
-    # Raise an error if the image_path doesn't point to a directory
-    if image_path and not os.path.isdir(image_path):
-        raise TypeError('image_path must lead to a directory if '
-                        'it is initialized. It is where the images are stored.')
-
-    # Raise an error if the csv_path doesn't point to a file
-    if csv_path and not os.path.isfile(csv_path):
-        raise TypeError('csv_path must lead to a file if it is initialized.'
-                        ' This is the csv containing pointers to the images.')
-
+    # Error checking for model type
     if model_str not in preprocessing_dict.keys():
         raise ValueError('model_str must be one the following: {}'.format(preprocessing_dict.keys))
-    # ------------------------------------------------------ #
 
     # BUILDING IMAGE PATH LIST #
-    list_of_image_paths = _image_paths_finder(image_path, csv_path,
-                                              image_column_header, new_csv_name)
-
-    if csv_path == '':
-        csv_path = new_csv_name
-
-    # IMAGE RETRIEVAL AND VECTORIZATION #
-    # Find image source: whether from url or directory
-    if image_path == '':
-        image_source = 'url'
-
-    else:
-        image_source = 'directory'
+    list_of_image_paths = dataframe[image_column_header]
 
     # Initialize the full batch
     num_images = len(list_of_image_paths)
@@ -498,4 +489,4 @@ def preprocess_data(image_column_header,
                              .format(i, num_images - i))
             i += 1
 
-    return full_image_data, csv_path, list_of_image_paths
+    return full_image_data, dataframe, list_of_image_paths

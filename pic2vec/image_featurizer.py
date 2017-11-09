@@ -66,7 +66,7 @@ import trafaret as t
 import pandas as pd
 
 from .build_featurizer import build_featurizer, supported_model_types
-from .feature_preprocessing import preprocess_data
+from .feature_preprocessing import preprocess_data, _image_paths_finder
 from .data_featurizing import featurize_data, _features_to_csv, _named_path_finder
 
 
@@ -183,7 +183,8 @@ class ImageFeaturizer:
                                 omit_time=False,
                                 omit_model=False,
                                 omit_depth=False,
-                                omit_output=False
+                                omit_output=False,
+                                batch_size=1000
                                 # crop_size = (299, 299),
                                 # number_crops = 0,
                                 # random_crop = False,
@@ -237,23 +238,49 @@ class ImageFeaturizer:
                 to the same path as the csv containing the list of names
 
         """
-        self.load_data(image_column_headers, image_path, csv_path, new_csv_name, grayscale)
-        return self.featurize(save_features=save_features, omit_time=omit_time,
-                              omit_model=omit_model, omit_depth=omit_depth, omit_output=omit_output)
+        # Convert column header to list if it's passed a single string
+        if not isinstance(image_column_headers, list):
+            image_column_headers = [image_column_headers]
 
-    def load_data(self,
-                  image_column_headers,
-                  image_path='',
-                  csv_path='',
-                  new_csv_name='featurizer_csv/generated_images_csv',
-                  batch_size=1000,
-                  grayscale=False
+        # Save the number of images, and create new csv file and folders if building from image dir
+        num_images = self._get_size_of_data(image_path, csv_path, image_column_headers,
+                                            new_csv_name)
 
-                  # crop_size = (299, 299),
-                  # number_crops = 0,
-                  # random_crop = False,
-                  # isotropic_scaling = True
-                  ):
+        if csv_path == '':
+            csv_path = new_csv_name
+            self.csv_path = csv_path
+
+        if batch_size == 0 or batch_size > num_images:
+            batch_size = num_images
+
+        df_original = pd.read_csv(csv_path)
+
+        index = 0
+        while index + batch_size <= num_images:
+            df_temp = df_original.iloc[index:index + batch_size, :].copy()
+
+            self._load_data(image_column_headers, df_temp, image_path, grayscale)
+
+            df_temp = self.featurize(save_features=save_features, omit_time=omit_time,
+                                     omit_model=omit_model, omit_depth=omit_depth,
+                                     omit_output=omit_output)
+            if index == 0:
+                df_partial = df_temp
+            else:
+                df_partial = pd.concat([df_partial, df_temp], ignore_index=True)
+
+            index += batch_size
+
+    def _load_data(self,
+                   image_column_headers,
+                   dataframe,
+                   image_path,
+                   grayscale=False
+                   # crop_size = (299, 299),
+                   # number_crops = 0,
+                   # random_crop = False,
+                   # isotropic_scaling = True
+                   ):
         """
         Load image directory and/or csv, and vectorize the images for input into the featurizer.
 
@@ -299,47 +326,27 @@ class ImageFeaturizer:
 
         scaled_size = size_dict[self.model_name]
 
-        # Convert column header to list if it's passed a single string
-        if isinstance(image_column_headers, str):
-            image_column_headers = [image_column_headers]
-
-        # If new csv_path is being generated, make sure the folder exists.
-        if (csv_path == ''):
-            # Raise error if multiple image columns are passed in without a csv
-            if len(image_column_headers) > 1:
-                raise ValueError('If building the csv from a directory, featurizer can only '
-                                 'create a single image column. If two image columns are needed, '
-                                 'please create a csv to pass in.')
-
-            # Create the filepath to the new csv
-            path_to_new_csv = os.path.dirname(new_csv_name)
-            if not os.path.isdir(path_to_new_csv) and path_to_new_csv != '':
-                os.makedirs(os.path.dirname(new_csv_name))
-
-        # Add backslash to end of image path if it is not there
-        if image_path != '' and image_path[-1] != "/":
-            image_path = '{}/'.format(image_path)
-
         # Save the full image tensor, the path to the csv, and the list of image paths
-        (image_data, csv_path, list_of_image_paths) = \
-            preprocess_data(image_column_headers[0], self.model_name, image_path, csv_path,
-                            new_csv_name, scaled_size, grayscale)
+        (image_data, dataframe, list_of_image_paths) = \
+            preprocess_data(image_column_headers[0], self.model_name, dataframe, image_path,
+                            scaled_size, grayscale)
 
         full_image_list = [list_of_image_paths]
         full_image_data = np.expand_dims(image_data, axis=0)
 
         if len(image_column_headers) > 1:
             for column in image_column_headers[1:]:
-                (image_data, csv_path, list_of_image_paths) = \
-                    preprocess_data(column, self.model_name, image_path, csv_path,
-                                    new_csv_name, scaled_size, grayscale)
+                (image_data, dataframe, list_of_image_paths) = \
+                    preprocess_data(column, self.model_name, dataframe, image_path,
+                                    scaled_size, grayscale)
+
                 full_image_data = np.concatenate((full_image_data,
                                                   np.expand_dims(image_data, axis=0)))
+
                 full_image_list.append(list_of_image_paths)
 
         # Save all of the necessary data to the featurizer
         self.data = full_image_data
-        self.csv_path = csv_path
         self.image_list = full_image_list
         self.image_column_headers = image_column_headers
         self.scaled_size = scaled_size
@@ -347,8 +354,8 @@ class ImageFeaturizer:
 
     @t.guard(save_features=t.Bool, omit_time=t.Bool, omit_model=t.Bool,
              omit_depth=t.Bool, omit_output=t.Bool)
-    def featurize(self, save_features=False, omit_time=False, omit_model=False,
-                  omit_depth=False, omit_output=False):
+    def _featurize(self, save_features=False, omit_time=False, omit_model=False,
+                   omit_depth=False, omit_output=False):
         """
         Featurize the loaded data, returning the dataframe and writing the features
         and the full combined data to csv
@@ -409,3 +416,29 @@ class ImageFeaturizer:
 
         self.full_dataframe = full_dataframe
         return full_dataframe
+
+    def _get_size_of_data(image_path, csv_path, image_column_headers, new_csv_name):
+        # Retrieving the size of the dataset, as well as creating any necessary files
+        num_images = 0
+        for image_column_header in image_column_headers:
+            num_images += len(_image_paths_finder(image_path, csv_path, image_column_header,
+                                                  new_csv_name))
+
+        # If new csv_path is being generated, make sure the folder exists.
+        if (csv_path == ''):
+            # Raise error if multiple image columns are passed in without a csv
+            if len(image_column_headers) > 1:
+                raise ValueError('If building the csv from a directory, featurizer can only '
+                                 'create a single image column. If two image columns are needed, '
+                                 'please create a csv to pass in.')
+
+            # Create the filepath to the new csv
+            path_to_new_csv = os.path.dirname(new_csv_name)
+            if not os.path.isdir(path_to_new_csv) and path_to_new_csv != '':
+                os.makedirs(os.path.dirname(new_csv_name))
+
+        # Add backslash to end of image path if it is not there
+        if image_path != '' and image_path[-1] != "/":
+            image_path = '{}/'.format(image_path)
+
+        return num_images
